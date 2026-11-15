@@ -1,5 +1,7 @@
 """Game Dialogue Assistant - Core ML and N-Gram Logic."""
 
+import argparse
+import random
 import re
 from collections import Counter, defaultdict
 
@@ -38,18 +40,16 @@ def normalize(text: str) -> str:
   return re.sub(r"\s+", " ", text.translate(_QUOTE_TRANSLATION)).strip()
 
 
-def to_sentences(text):
-  """Splits raw dialogue text into clean sentences without trailing punctuation,
+def to_sentences(text: str) -> list[str]:
+  """Splits raw dialogue text into clean sentences.
 
-  preserving decimal numbers like 3.5 and stripping outer quotes.
+  Only splits on terminal punctuation followed by whitespace or end of text,
+  so values like "3.5" and ellipses stay intact.
   """
-  if not text or not text.strip():
-    return []
+  parts = _SENTENCE_END.split(normalize(text))
+  cleaned = (p.strip(" \"'.!?") for p in parts if p)
+  return [c for c in cleaned if c]
 
-  text = text.translate(_QUOTE_TRANSLATION)
-  raw_splits = re.split(r"(?:\.(?!\d)|(?<!\d)\.|[!?])+", text)
-
-  return [c for s in raw_splits if (c := s.strip(" \t\n\r\"'"))]
 
 def to_tokens(sentence: str) -> list[str]:
   """Extracts lowercase words (Unicode letters and digits) with inner apostrophes."""
@@ -74,23 +74,176 @@ def milestone_1(raw_corpus: str | None = None, n: int = 2) -> list[list[str]]:
   for sentence in to_sentences(corpus_text):
     tokens = to_tokens(sentence)
     if tokens:
-      preprocessed.append([START_TOKEN] * max(n - 1, 1) + tokens + [END_TOKEN])
+      preprocessed.append([START_TOKEN] * (n - 1) + tokens + [END_TOKEN])
 
   if not preprocessed:
     raise ValueError("Corpus contains no usable sentences.")
   return preprocessed
 
 
+def build_ngrams(token_sents, n):
+  """Maps each (n-1)-word context to a Counter of the words that follow it."""
+  follow = defaultdict(Counter)
+  for tokens in token_sents:
+    for i in range(len(tokens) - n + 1):
+      follow[tuple(tokens[i : i + n - 1])][tokens[i + n - 1]] += 1
+  return follow
+
+
+class GameNgramLM:
+  """N-gram language model with add-k smoothing."""
+
+  def __init__(self, n=2, k=0.1):
+    if n < 1:
+      raise ValueError("n must be at least 1.")
+    if k <= 0:
+      raise ValueError("k must be positive.")
+    self.n = n
+    self.k = k
+    self.counts = {}
+    self.totals = {}
+    self.vocab = set()
+
+  def fit(self, token_sents):
+    """Fits on padded token lists, as returned by milestone_1(n=self.n)."""
+    self.counts = dict(build_ngrams(token_sents, self.n))
+    self.totals = {ctx: sum(c.values()) for ctx, c in self.counts.items()}
+    self.vocab = {t for sent in token_sents for t in sent if t != START_TOKEN}
+    return self
+
+  def _context(self, context):
+    context = tuple(context)
+    if self.n == 1:
+      return ()
+    context = context[-(self.n - 1):]
+    return (START_TOKEN,) * (self.n - 1 - len(context)) + context
+
+  def prob(self, context, word):
+    """Smoothed probability: (count + k) / (total + k * |V|)."""
+    ctx = self._context(context)
+    count = self.counts.get(ctx, {}).get(word, 0)
+    total = self.totals.get(ctx, 0)
+    return (count + self.k) / (total + self.k * len(self.vocab))
+
+
 # --- Milestone 2: Build the n-gram language model with smoothing.
-def milestone_2():
-  raise NotImplementedError("TODO(milestone 2)")
+def milestone_2(n=2, k=0.1, corpus_text=None):
+  """Builds and fits a smoothed n-gram language model on the game corpus."""
+  token_sents = milestone_1(corpus_text, n=n)
+  return GameNgramLM(n=n, k=k).fit(token_sents)
+
+
+def detokenize(tokens):
+  """Turns tokens back into a readable sentence."""
+  words = [t for t in tokens if t not in (START_TOKEN, END_TOKEN)]
+  if not words:
+    return ""
+  text = " ".join(words)
+  text = re.sub(r"\bi\b", "I", text)
+  text = text[0].upper() + text[1:]
+  if text[-1] not in ".!?":
+    text += "."
+  return text
+
+
+def _sample(model, context, rng, temperature, top_k):
+  """Samples the next token from the model's smoothed distribution."""
+  words = sorted(model.vocab)
+  weights = [model.prob(context, w) ** (1.0 / temperature) for w in words]
+
+  if top_k is not None and top_k < len(words):
+    ranked = sorted(range(len(words)), key=lambda i: (-weights[i], words[i]))
+    keep = set(ranked[:top_k])
+    weights = [w if i in keep else 0.0 for i, w in enumerate(weights)]
+
+  return rng.choices(words, weights=weights, k=1)[0]
 
 
 # --- Milestone 3: Implement dialogue generation logic using the model.
-def milestone_3():
-  raise NotImplementedError("TODO(milestone 3)")
+def milestone_3(model, start_phrase="", max_words=20, temperature=1.0,
+                top_k=None, seed=None):
+  """Generates one line of NPC dialogue, continuing from an optional phrase."""
+  if max_words < 1:
+    raise ValueError("max_words must be at least 1.")
+  if temperature <= 0:
+    raise ValueError("temperature must be positive.")
+  if top_k is not None and top_k < 1:
+    raise ValueError("top_k must be at least 1.")
+  if not model.vocab:
+    raise ValueError("Model has not been fitted.")
+
+  rng = random.Random(seed)
+  tokens = to_tokens(start_phrase)
+  generated = 0
+
+  while generated < max_words:
+    context = [START_TOKEN] * (model.n - 1) + tokens
+    nxt = _sample(model, context, rng, temperature, top_k)
+    if nxt == END_TOKEN:
+      break
+    tokens.append(nxt)
+    generated += 1
+
+  return detokenize(tokens)
 
 
 # --- Milestone 4: Design a CLI where users can input a starting phrase and generate dialogue.
-def milestone_4():
-  raise NotImplementedError("TODO(milestone 4)")
+def build_parser():
+  parser = argparse.ArgumentParser(
+      description="Generate RPG NPC dialogue with an n-gram language model.")
+  parser.add_argument("-p", "--phrase", default=None,
+                      help="starting phrase; omit for interactive mode")
+  parser.add_argument("-n", "--order", type=int, default=2, help="n-gram order")
+  parser.add_argument("-k", "--smoothing", type=float, default=0.001,
+                      help="add-k smoothing constant")
+  parser.add_argument("-m", "--max-words", type=int, default=20)
+  parser.add_argument("-t", "--temperature", type=float, default=1.0)
+  parser.add_argument("--top-k", type=int, default=None)
+  parser.add_argument("-c", "--count", type=int, default=1,
+                      help="lines to generate per phrase")
+  parser.add_argument("--seed", type=int, default=None)
+  return parser
+
+
+def milestone_4(argv=None, input_fn=input, output_fn=print):
+  """Runs the CLI and returns an exit code."""
+  args = build_parser().parse_args(argv)
+
+  try:
+    model = milestone_2(n=args.order, k=args.smoothing)
+  except ValueError as err:
+    output_fn(f"Error: {err}")
+    return 1
+
+  def generate(phrase, offset):
+    for i in range(args.count):
+      seed = None if args.seed is None else args.seed + offset + i
+      yield milestone_3(model, phrase, args.max_words, args.temperature,
+                        args.top_k, seed)
+
+  try:
+    if args.phrase is not None:
+      for line in generate(args.phrase, 0):
+        output_fn(line)
+      return 0
+
+    output_fn("NPC Dialogue Generator. Type a starting phrase, or 'quit' to exit.")
+    turn = 0
+    while True:
+      try:
+        phrase = input_fn("> ").strip()
+      except EOFError:
+        break
+      if phrase.lower() in ("quit", "exit", "q"):
+        break
+      for line in generate(phrase, turn * args.count):
+        output_fn(line)
+      turn += 1
+    return 0
+  except ValueError as err:
+    output_fn(f"Error: {err}")
+    return 1
+
+
+if __name__ == "__main__":
+  raise SystemExit(milestone_4())
