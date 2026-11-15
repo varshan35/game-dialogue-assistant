@@ -3,6 +3,7 @@
 import pytest
 from app.core import (
     detokenize,
+    generate_dialogue,
     milestone_1,
     milestone_2,
     milestone_3,
@@ -174,7 +175,7 @@ def test_detokenize():
 def test_milestone_3():
   """Tests that generation returns a well-formed line starting with the phrase."""
   model = milestone_2(n=2, k=0.001)
-  line = milestone_3(model, "the dragon", max_words=15, seed=1)
+  line = generate_dialogue(model, "the dragon", max_words=15, seed=1)
 
   assert isinstance(line, str)
   assert line.startswith("The dragon")
@@ -185,8 +186,8 @@ def test_milestone_3():
 def test_milestone_3_is_reproducible():
   """Tests that the same seed gives the same line."""
   model = milestone_2(n=2, k=0.001)
-  a = milestone_3(model, "beware the", seed=42)
-  b = milestone_3(model, "beware the", seed=42)
+  a = generate_dialogue(model, "beware the", seed=42)
+  b = generate_dialogue(model, "beware the", seed=42)
   assert a == b
 
 
@@ -194,34 +195,44 @@ def test_milestone_3_respects_max_words():
   """Tests that no more than max_words new words are added."""
   model = milestone_2(n=2, k=0.1)
   for seed in range(10):
-    line = milestone_3(model, "", max_words=5, seed=seed)
+    line = generate_dialogue(model, "", max_words=5, seed=seed)
     assert len(to_tokens(line)) <= 5
 
 
 def test_milestone_3_top_k_one_is_greedy():
   """Tests that top_k=1 always picks the most likely word."""
   model = milestone_2(n=2, k=0.001)
-  a = milestone_3(model, "greetings", top_k=1, seed=1)
-  b = milestone_3(model, "greetings", top_k=1, seed=99)
+  a = generate_dialogue(model, "greetings", top_k=1, seed=1)
+  b = generate_dialogue(model, "greetings", top_k=1, seed=99)
   assert a == b
   assert a.startswith("Greetings traveler")
+
+
+def test_milestone_3_wrapper():
+  """Tests the prompt-first wrapper, with and without a model."""
+  model = milestone_2(n=2, k=0.001)
+  line = milestone_3("the dragon", max_tokens=10, seed=1, model=model)
+  assert line.startswith("The dragon")
+  assert line == generate_dialogue(model, "the dragon", 10, seed=1)
+  assert milestone_3(seed=5) == milestone_3(seed=5)
+  assert milestone_3().startswith("Greetings traveler")
 
 
 def test_milestone_3_no_start_phrase():
   """Tests generation from nothing."""
   model = milestone_2(n=2, k=0.001)
-  assert len(milestone_3(model, "", seed=3)) > 0
+  assert len(generate_dialogue(model, "", seed=3)) > 0
 
 
 def test_milestone_3_invalid_params():
   """Tests that bad generation settings raise errors."""
   model = milestone_2()
   with pytest.raises(ValueError):
-    milestone_3(model, max_words=0)
+    generate_dialogue(model, max_words=0)
   with pytest.raises(ValueError):
-    milestone_3(model, temperature=0)
+    generate_dialogue(model, temperature=0)
   with pytest.raises(ValueError):
-    milestone_3(model, top_k=0)
+    generate_dialogue(model, top_k=0)
 
 
 # Milestone 4: Design a CLI where users can input a starting phrase and generate dialogue.

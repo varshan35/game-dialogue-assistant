@@ -159,9 +159,8 @@ def _sample(model, context, rng, temperature, top_k):
   return rng.choices(words, weights=weights, k=1)[0]
 
 
-# --- Milestone 3: Implement dialogue generation logic using the model.
-def milestone_3(model, start_phrase="", max_words=20, temperature=1.0,
-                top_k=None, seed=None):
+def generate_dialogue(model, start_phrase="", max_words=20, temperature=1.0,
+                      top_k=None, seed=None):
   """Generates one line of NPC dialogue, continuing from an optional phrase."""
   if max_words < 1:
     raise ValueError("max_words must be at least 1.")
@@ -187,6 +186,13 @@ def milestone_3(model, start_phrase="", max_words=20, temperature=1.0,
   return detokenize(tokens)
 
 
+# --- Milestone 3: Implement dialogue generation logic using the model.
+def milestone_3(prompt="greetings traveler", max_tokens=15, seed=42, model=None,
+                temperature=1.0, top_k=None):
+  """Generates dialogue using the fitted n-gram model."""
+  lm = model if model is not None else milestone_2(k=0.001)
+  return generate_dialogue(lm, prompt, max_tokens, temperature, top_k, seed)
+
 # --- Milestone 4: Design a CLI where users can input a starting phrase and generate dialogue.
 def build_parser():
   parser = argparse.ArgumentParser(
@@ -203,8 +209,7 @@ def build_parser():
                       help="lines to generate per phrase")
   parser.add_argument("--seed", type=int, default=None)
   return parser
-
-
+# --- Milestone 4: Design a CLI where users can input a starting phrase and generate dialogue.
 def milestone_4(argv=None, input_fn=input, output_fn=print):
   """Runs the CLI and returns an exit code."""
   args = build_parser().parse_args(argv)
@@ -218,8 +223,8 @@ def milestone_4(argv=None, input_fn=input, output_fn=print):
   def generate(phrase, offset):
     for i in range(args.count):
       seed = None if args.seed is None else args.seed + offset + i
-      yield milestone_3(model, phrase, args.max_words, args.temperature,
-                        args.top_k, seed)
+      yield generate_dialogue(model, phrase, args.max_words, args.temperature,
+                              args.top_k, seed)
 
   try:
     if args.phrase is not None:
